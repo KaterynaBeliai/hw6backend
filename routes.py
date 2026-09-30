@@ -1,0 +1,17 @@
+ROUTE_TABLE = [
+    ("GET", "/", "handle_home"),
+    ("GET", "/reset", "handle_reset"),
+    ("GET", "/logout", "handle_logout"),
+    ("GET", "/login", "handle_login"),
+    ("POST", "/login", "handle_login"),
+    ("GET", "/profile", "handle_profile"),
+    ("POST", "/api/login", "handle_api_login"),
+    ("GET", "/api/profile", "handle_api_profile"),
+    ("GET", "/admin", "handle_admin"),
+    ("GET", "/about", "handle_about"),
+    ("GET", "/demo", "handle_demo"),
+    ("GET", "/echo", "handle_echo"),
+    ("POST", "/echo", "handle_echo"),
+    ("GET", "/{lang}", "handle_home_lang"),
+    ("GET", "/{code}/{lang}", "handle_localized_page"),
+]

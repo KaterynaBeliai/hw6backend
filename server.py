@@ -83,11 +83,17 @@ class HTTPServer:
                         content_length = int(headers.get("content-length", "0"))
                         # read remaining body bytes if any
                         body_bytes = body
-                        while len(body_bytes) < content_length:
-                            chunk = client.recv(4096)
-                            if not chunk:
-                                break
-                            body_bytes += chunk
+                        content_length_header = headers.get("content-length")
+                        body_bytes = b""
+                        if content_length_header is not None:
+                            content_length = int(content_length_header)
+                            body_bytes = body[:content_length]
+                            while len(body_bytes) < content_length:
+                                remaining = content_length - len(body_bytes)
+                                chunk = client.recv(min(4096, remaining))
+                                if not chunk:
+                                    break
+                                body_bytes += chunk
 
                         text = (head + b"\r\n\r\n" + body_bytes).decode("utf-8", errors="replace")
                         request = parse_request(text)

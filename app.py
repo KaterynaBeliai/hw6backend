@@ -1,178 +1,250 @@
-import os
-
 try:
     from .response import HTMLResponse, RedirectResponse, JSONResponse
+    from .response import Response
     from .templater import Templater
     from .http_parser import parse_query_string
     from .users import check_password, USERS
     from .sessions import create_session, get_session, delete_session
     from .tokens import make_token, verify_token
+    from .router import Router
+    from .routes import ROUTE_TABLE
 except Exception:
     from response import HTMLResponse, RedirectResponse, JSONResponse
+    from response import Response
     from templater import Templater
     from http_parser import parse_query_string
     from users import check_password, USERS
     from sessions import create_session, get_session, delete_session
     from tokens import make_token, verify_token
+    from router import Router
+    from routes import ROUTE_TABLE
+
+
+SUPPORTED_LANGUAGES = {"en", "ua"}
+LOCALIZED_PAGES = {"index", "about", "demo"}
+HOME_TEXT = {
+    "en": {
+        "language_label": "Language",
+        "language_name": "English",
+        "welcome": "Welcome to the Example Site",
+        "intro": "This is the index page. Try the",
+        "demo_label": "demo",
+    },
+    "ua": {
+        "language_label": "Мова",
+        "language_name": "Українська",
+        "welcome": "Вітаємо на демонстраційному сайті",
+        "intro": "Це головна сторінка. Спробуйте",
+        "demo_label": "демо",
+    },
+}
+UA_TRANSLATIONS = {
+    '<a href="/">Home</a>': '<a href="/">Головна</a>',
+    '<a href="/about">About</a>': '<a href="/about">Про сайт</a>',
+    '<a href="/demo">Demo</a>': '<a href="/demo">Демо</a>',
+    "<h1>About</h1>": "<h1>Про сайт</h1>",
+    "This site demonstrates a tiny Python web server and a templater.": "Цей сайт демонструє невеликий вебсервер на Python і шаблонізатор.",
+    "<h1>Demo</h1>": "<h1>Демо</h1>",
+    "Hello, ": "Вітаємо, ",
+    "! You're looking at a page about ": "! Ви переглядаєте сторінку про ",
+    "You have visited this page ": "Ви відвідали цю сторінку ",
+    " time(s)": " раз(ів)",
+    "Message": "Повідомлення",
+    "Send": "Надіслати",
+    "Example site — neutral placeholder content.": "Навчальний сайт про невеликий вебсервер і шаблонізатор.",
+}
 
 
 class App:
     def __init__(self, pages_dir=None):
         self.templater = Templater(pages_dir)
+        self.router = Router()
+        self._register_routes()
+
+    def _register_routes(self):
+        for method, pattern, handler_name in ROUTE_TABLE:
+            handler = getattr(self, handler_name)
+            self.router.add_route(method, pattern, handler)
+
+    def handle(self, request):
+        return self.handle_request(request)
+
+    def handle_request(self, request):
+        handler, params = self.router.match(request.method.upper(), request.path)
+        if handler is None:
+            return HTMLResponse("Not Found", status=404)
+
+        request.params = params
+        response = handler(request)
+        if response is None:
+            return HTMLResponse("Not Found", status=404)
+        return response
 
     def login_form(self, error=""):
         html = self.templater.render("login", {"error": error})
         return HTMLResponse(html)
 
-    def handle(self, request):
-        path = request.path
-        if ".." in path:
-            return HTMLResponse("Not Found", status=404)
+    def handle_home(self, request):
+        return self._render_home(request, "en")
 
-        # special route to reset visits cookie and redirect to index
-        if path == "/reset":
-            resp = RedirectResponse("/")
-            resp.delete_cookie("visits")
-            return resp
+    def handle_home_lang(self, request):
+        lang = request.params["lang"]
+        if lang not in SUPPORTED_LANGUAGES:
+            return None
+        return self._render_home(request, lang)
 
-        # logout (delete session)
-        if path == "/logout":
-            # delete server-side session if present
-            sid = (request.cookies or {}).get("session_id")
-            if sid:
-                delete_session(sid)
-            resp = RedirectResponse("/")
-            # try delete session cookie and visits cookie
-            resp.delete_cookie("session_id")
-            resp.delete_cookie("visits")
-            return resp
+    def handle_localized_page(self, request):
+        page = request.params["code"]
+        lang = request.params["lang"]
+        if page not in LOCALIZED_PAGES or lang not in SUPPORTED_LANGUAGES:
+            return None
+        if page == "index":
+            return self._render_home(request, lang)
+        return self._render_page(page, request, lang=lang)
 
-        # login form and submission
-        if path == "/login":
-            # POST must be handled before GET for PRG
-            if request.method.upper() == "POST":
-                # parse form-encoded body
-                form = parse_query_string(request.body or "")
-                username = form.get("username") or ""
-                password = form.get("password") or ""
-                use_cookie = form.get("insecure") == "1"
-
-                # check credentials via users.check_password
-                if not check_password(username, password):
-                    return self.login_form(error="Login failed")
-
-                # demo role: 'admin' username gets admin role
-                role = "admin" if username == "admin" else "user"
-
-                if use_cookie:
-                    # insecure: store user data directly in cookies
-                    resp = RedirectResponse("/profile")
-                    resp.set_cookie("user", username)
-                    resp.set_cookie("role", role)
-                    resp.set_cookie("email", USERS.get(username, {}).get("email"), max_age=3600)
-                    return resp
-
-                # secure: create server-side session and set HttpOnly cookie
-                sid = create_session({"user": username, "role": role, "email": USERS.get(username, {}).get("email")})
-                resp = RedirectResponse("/profile")
-                resp.set_cookie("session_id", sid, max_age=3600, http_only=True)
-                return resp
-
-            # GET -> show form
-            if request.method.upper() == "GET":
-                return self.login_form()
-
-        # profile view
-        if path == "/profile":
-            # get session from session store
-            sid = (request.cookies or {}).get("session_id")
-            session = get_session(sid)
-            if session is None:
-                # fallback to insecure cookies for Task 1 compatibility
-                user = (request.cookies or {}).get("user")
-                role = (request.cookies or {}).get("role")
-                email = (request.cookies or {}).get("email")
-                if not user:
-                    return RedirectResponse("/login")
-                html = self.templater.render("profile", params={"user": user, "role": role, "email": email})
-                return HTMLResponse(html)
-
-            # render from session
-            html = self.templater.render("profile", params={"user": session.get("user"), "role": session.get("role"), "email": session.get("email")})
-            return HTMLResponse(html)
-
-        # API: token-based login (returns JSON with token)
-        if path == "/api/login":
-            if request.method.upper() == "POST":
-                form = parse_query_string(request.body or "")
-                username = form.get("username") or ""
-                password = form.get("password") or ""
-                if not check_password(username, password):
-                    return JSONResponse({"error": "invalid_credentials"}, status=401)
-                # build token payload
-                role = "admin" if username == "admin" else "user"
-                # make_token expects (username, role)
-                token = make_token(username, role)
-                return JSONResponse({"token": token})
-            return JSONResponse({"error": "method_not_allowed"}, status=401)
-
-        # API: token-protected profile
-        if path == "/api/profile":
-            # look for Authorization: Bearer <token>
-            auth = (request.headers or {}).get("authorization")
-            if not auth or not auth.lower().startswith("bearer "):
-                return JSONResponse({"error": "missing_authorization"}, status=401)
-            token = auth.split(None, 1)[1]
-            payload = verify_token(token)
-            if payload is None:
-                return JSONResponse({"error": "invalid_token"}, status=401)
-            # tokens.py uses 'username' key
-            return JSONResponse({"user": payload.get("username"), "role": payload.get("role")})
-
-        # admin page
-        if path == "/admin":
-            sid = (request.cookies or {}).get("session_id")
-            session = get_session(sid)
-            role = None
-            if session is not None:
-                role = session.get("role")
-            else:
-                role = (request.cookies or {}).get("role")
-
-            if sid is None and role is None:
-                return RedirectResponse("/login")
-
-            if role != "admin":
-                return HTMLResponse("403 Forbidden", status=403)
-
-            return HTMLResponse("Welcome to admin area")
-
-        if path == "/":
-            name = "index"
-        else:
-            name = path.lstrip("/")
-
-        # merge query params and other template params
+    def _render_home(self, request, lang):
         params = dict(request.query or {})
+        params["lang"] = lang
+        params.update(HOME_TEXT[lang])
 
-        # if this is the index page, use a cookie-based visits counter
-        if path == "/":
-            visits = 0
-            visits_raw = (request.cookies or {}).get("visits")
-            if isinstance(visits_raw, str) and visits_raw.isdigit():
-                visits = int(visits_raw)
-            else:
-                visits = 0
-            visits = visits + 1
-            params["visits"] = visits
+        visits_raw = (request.cookies or {}).get("visits")
+        visits = int(visits_raw) if isinstance(visits_raw, str) and visits_raw.isdigit() else 0
+        params["visits"] = visits + 1
 
-        html = self.templater.render(name, params=params)
+        html = self.templater.render("index", params=params)
         if html is None:
-            return HTMLResponse("Not Found", status=404)
+            return None
+        if lang == "ua":
+            html = self._translate_ua(html)
 
         response = HTMLResponse(html)
-        # set updated visits cookie for index page
-        if path == "/":
-            response.set_cookie("visits", str(params.get("visits", "0")))
-
+        response.set_cookie("visits", str(params["visits"]))
         return response
+
+    def handle_reset(self, request):
+        response = RedirectResponse("/")
+        response.delete_cookie("visits")
+        return response
+
+    def handle_logout(self, request):
+        session_id = (request.cookies or {}).get("session_id")
+        if session_id:
+            delete_session(session_id)
+        response = RedirectResponse("/")
+        response.delete_cookie("session_id")
+        response.delete_cookie("visits")
+        return response
+
+    def handle_login(self, request):
+        if request.method.upper() == "GET":
+            return self.login_form()
+        if request.method.upper() != "POST":
+            return None
+
+        form = parse_query_string(request.body or "")
+        username = form.get("username") or ""
+        password = form.get("password") or ""
+        use_cookie = form.get("insecure") == "1"
+
+        if not check_password(username, password):
+            return self.login_form(error="Login failed")
+
+        role = "admin" if username == "admin" else "user"
+        email = USERS.get(username, {}).get("email")
+        if use_cookie:
+            response = RedirectResponse("/profile")
+            response.set_cookie("user", username)
+            response.set_cookie("role", role)
+            response.set_cookie("email", email, max_age=3600)
+            return response
+
+        session_id = create_session({"user": username, "role": role, "email": email})
+        response = RedirectResponse("/profile")
+        response.set_cookie("session_id", session_id, max_age=3600, http_only=True)
+        return response
+
+    def handle_profile(self, request):
+        session_id = (request.cookies or {}).get("session_id")
+        session = get_session(session_id)
+        if session is None:
+            user = (request.cookies or {}).get("user")
+            if not user:
+                return RedirectResponse("/login")
+            profile = {
+                "user": user,
+                "role": (request.cookies or {}).get("role"),
+                "email": (request.cookies or {}).get("email"),
+            }
+        else:
+            profile = {
+                "user": session.get("user"),
+                "role": session.get("role"),
+                "email": session.get("email"),
+            }
+        return self._render_page("profile", request, profile)
+
+    def handle_api_login(self, request):
+        form = parse_query_string(request.body or "")
+        username = form.get("username") or ""
+        password = form.get("password") or ""
+        if not check_password(username, password):
+            return JSONResponse({"error": "invalid_credentials"}, status=401)
+
+        role = "admin" if username == "admin" else "user"
+        token = make_token(username, role)
+        return JSONResponse({"token": token})
+
+    def handle_api_profile(self, request):
+        auth = (request.headers or {}).get("authorization")
+        if not auth or not auth.lower().startswith("bearer "):
+            return JSONResponse({"error": "missing_authorization"}, status=401)
+
+        token = auth.split(None, 1)[1]
+        payload = verify_token(token)
+        if payload is None:
+            return JSONResponse({"error": "invalid_token"}, status=401)
+        return JSONResponse({"user": payload.get("username"), "role": payload.get("role")})
+
+    def handle_admin(self, request):
+        session_id = (request.cookies or {}).get("session_id")
+        session = get_session(session_id)
+        role = session.get("role") if session is not None else (request.cookies or {}).get("role")
+
+        if session_id is None and role is None:
+            return RedirectResponse("/login")
+        if role != "admin":
+            return HTMLResponse("403 Forbidden", status=403)
+        return HTMLResponse("Welcome to admin area")
+
+    def handle_about(self, request):
+        return self._render_page("about", request)
+
+    def handle_demo(self, request):
+        return self._render_page("demo", request)
+
+    def handle_echo(self, request):
+        if request.method.upper() == "GET":
+            return self._render_page("demo", request)
+        if request.method.upper() == "POST":
+            return Response(request.body or "", content_type="text/plain; charset=utf-8")
+        return None
+
+    def _render_page(self, name, request, params=None, lang="en"):
+        template_params = dict(request.query or {})
+        if name == "demo":
+            template_params.setdefault("name", "Jane")
+            template_params.setdefault("lang", "Python")
+        if params:
+            template_params.update(params)
+        html = self.templater.render(name, params=template_params)
+        if html is None:
+            return None
+        if lang == "ua":
+            html = self._translate_ua(html)
+        return HTMLResponse(html)
+
+    @staticmethod
+    def _translate_ua(html):
+        for english, ukrainian in UA_TRANSLATIONS.items():
+            html = html.replace(english, ukrainian)
+        return html
