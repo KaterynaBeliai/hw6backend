@@ -7,7 +7,6 @@ try:
     from .sessions import create_session, get_session, delete_session
     from .tokens import make_token, verify_token
     from .router import Router
-    from .routes import ROUTE_TABLE
 except Exception:
     from response import HTMLResponse, RedirectResponse, JSONResponse
     from response import Response
@@ -17,7 +16,6 @@ except Exception:
     from sessions import create_session, get_session, delete_session
     from tokens import make_token, verify_token
     from router import Router
-    from routes import ROUTE_TABLE
 
 
 SUPPORTED_LANGUAGES = {"en", "ua"}
@@ -59,12 +57,18 @@ class App:
     def __init__(self, pages_dir=None):
         self.templater = Templater(pages_dir)
         self.router = Router()
-        self._register_routes()
 
-    def _register_routes(self):
-        for method, pattern, handler_name in ROUTE_TABLE:
-            handler = getattr(self, handler_name)
-            self.router.add_route(method, pattern, handler)
+    def get(self, path):
+        return self._route("GET", path)
+
+    def post(self, path):
+        return self._route("POST", path)
+
+    def _route(self, method, path):
+        def decorator(handler):
+            self.router.add_route(method, path, handler)
+            return handler
+        return decorator
 
     def handle(self, request):
         return self.handle_request(request)
@@ -78,7 +82,11 @@ class App:
         response = handler(request)
         if response is None:
             return HTMLResponse("Not Found", status=404)
-        return response
+        if isinstance(response, Response):
+            return response
+        if isinstance(response, (str, bytes)):
+            return HTMLResponse(response if isinstance(response, str) else response.decode("utf-8", "replace"))
+        return HTMLResponse(str(response))
 
     def login_form(self, error=""):
         html = self.templater.render("login", {"error": error})
